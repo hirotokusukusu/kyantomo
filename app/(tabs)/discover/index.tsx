@@ -171,6 +171,13 @@ export default function DiscoverScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      <TouchableOpacity
+        style={styles.supabaseButton}
+        onPress={() => router.push('/supabase-check' as any)}
+      >
+        <Text style={styles.supabaseButtonText}>Supabase 接続確認</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -219,6 +226,21 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+  },
+  supabaseButton: {
+    marginTop: 12,
+    marginHorizontal: 16,
+    backgroundColor: colors.surfaceHover,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  supabaseButtonText: {
+    fontSize: 13,
+    fontWeight: '600' as const,
+    color: colors.textSecondary,
   },
   statsRow: {
     flexDirection: 'row',
