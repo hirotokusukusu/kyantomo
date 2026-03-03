@@ -1,24 +1,80 @@
 import createContextHook from '@nkzw/create-context-hook';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Alert, Platform } from 'react-native';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { User } from '@/types';
 import { UNIVERSITY_EMAIL_DOMAIN } from '@/constants/university';
-import { mockUsers } from '@/mocks/users';
+import { supabase } from '@/lib/supabase';
 
-const AUTH_STORAGE_KEY = 'auth_user';
-const VERIFICATION_STORAGE_KEY = 'pending_verification';
+type ProfileRow = {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+  department: string | null;
+  year: number | null;
+  hobbies: string[] | null;
+  courses: string[] | null;
+  bio: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
-interface PendingVerification {
+type RegisterInput = {
   email: string;
-  code: string;
-  userData: Omit<User, 'id' | 'createdAt'>;
-  expiresAt: number;
-}
+  password: string;
+  displayName: string;
+  department: string;
+  year: number;
+};
 
-const generateVerificationCode = (): string => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+const DEFAULT_AVATAR =
+  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&h=150&fit=crop&crop=face';
+
+const mapProfileToUser = (profile: ProfileRow, email: string): User => ({
+  id: profile.id,
+  email,
+  displayName: profile.display_name,
+  avatarUrl: profile.avatar_url ?? DEFAULT_AVATAR,
+  department: profile.department ?? '',
+  year: profile.year ?? 1,
+  hobbies: profile.hobbies ?? [],
+  courses: profile.courses ?? [],
+  bio: profile.bio ?? '',
+  createdAt: profile.created_at,
+  profileCompleted: false,
+  emailVerified: true,
+});
+
+const ensureProfile = async (authUser: { id: string; email?: string | null; user_metadata?: any }) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', authUser.id)
+    .maybeSingle<ProfileRow>();
+
+  if (error) throw error;
+  if (data) return data;
+
+  const fallbackDisplayName =
+    (authUser.user_metadata?.display_name as string | undefined) ??
+    (authUser.email ? authUser.email.split('@')[0] : 'ユーザー');
+
+  const { data: inserted, error: insertError } = await supabase
+    .from('profiles')
+    .insert({
+      id: authUser.id,
+      display_name: fallbackDisplayName,
+      avatar_url: authUser.user_metadata?.avatar_url ?? DEFAULT_AVATAR,
+      department: '',
+      year: 1,
+      hobbies: [],
+      courses: [],
+      bio: '',
+    })
+    .select('*')
+    .single<ProfileRow>();
+
+  if (insertError) throw insertError;
+  return inserted;
 };
 
 export const validateUniversityEmail = (email: string): boolean => {
@@ -29,212 +85,174 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const queryClient = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null);
-  const verificationCodeRef = useRef<string | null>(null);
 
-  const authQuery = useQuery({
-    queryKey: ['auth'],
-    queryFn: async () => {
-      const stored = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
-      return stored ? JSON.parse(stored) as User : null;
-    },
-  });
+  const syncUserFromSession = useCallback(async () => {
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
+    if (error) throw error;
+
+    if (!session?.user) {
+      setUser(null);
+      return;
+    }
+
+    const profile = await ensureProfile(session.user);
+    setUser(mapProfileToUser(profile, session.user.email ?? ''));
+  }, []);
 
   useEffect(() => {
-    if (authQuery.data !== undefined) {
-      setUser(authQuery.data);
-      setIsLoading(false);
-    }
-  }, [authQuery.data]);
+    let mounted = true;
+
+    syncUserFromSession()
+      .catch((error) => {
+        console.log('Failed to sync session:', error);
+      })
+      .finally(() => {
+        if (mounted) setIsLoading(false);
+      });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(() => {
+      syncUserFromSession().catch((error) => {
+        console.log('Auth state sync failed:', error);
+      });
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [syncUserFromSession]);
 
   const loginMutation = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
       if (!validateUniversityEmail(email)) {
         throw new Error('関西学院大学のメールアドレス（@kwansei.ac.jp）を使用してください');
       }
-      
-      const existingUser = mockUsers.find(u => u.email === email);
-      if (!existingUser) {
-        throw new Error('アカウントが見つかりません');
-      }
-      
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(existingUser));
-      return existingUser;
+
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      if (!data.user) throw new Error('ログインに失敗しました');
+
+      const profile = await ensureProfile(data.user);
+      return mapProfileToUser(profile, data.user.email ?? email);
     },
-    onSuccess: (data) => {
-      setUser(data);
-      queryClient.invalidateQueries({ queryKey: ['auth'] });
+    onSuccess: (nextUser) => {
+      setUser(nextUser);
+      queryClient.invalidateQueries();
     },
   });
 
-  const sendVerificationMutation = useMutation({
-    mutationFn: async (userData: Omit<User, 'id' | 'createdAt'>) => {
-      if (!validateUniversityEmail(userData.email)) {
+  const registerMutation = useMutation({
+    mutationFn: async ({ email, password, displayName, department, year }: RegisterInput) => {
+      if (!validateUniversityEmail(email)) {
         throw new Error('関西学院大学のメールアドレス（@kwansei.ac.jp）を使用してください');
       }
-      
-      const code = generateVerificationCode();
-      verificationCodeRef.current = code;
-      
-      const verification: PendingVerification = {
-        email: userData.email,
-        code,
-        userData,
-        expiresAt: Date.now() + 10 * 60 * 1000,
-      };
-      
-      await AsyncStorage.setItem(VERIFICATION_STORAGE_KEY, JSON.stringify(verification));
-      
-      console.log(`[EMAIL VERIFICATION] Code for ${userData.email}: ${code}`);
-      
-      if (Platform.OS === 'web') {
-        setTimeout(() => {
-          alert(`認証コード: ${code}\n\n※デモ用：実際のアプリではメールで送信されます`);
-        }, 500);
-      } else {
-        setTimeout(() => {
-          Alert.alert(
-            'メール認証',
-            `認証コードを送信しました\n\n【デモ用】認証コード: ${code}\n\n※実際のアプリではメールで送信されます`,
-            [{ text: 'OK' }]
-          );
-        }, 500);
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            display_name: displayName,
+            department,
+            year,
+            avatar_url: DEFAULT_AVATAR,
+          },
+        },
+      });
+      if (error) throw error;
+      if (!data.user) throw new Error('登録に失敗しました');
+
+      if (!data.session) {
+        return { user: null as User | null, emailConfirmationRequired: true };
       }
-      
-      return verification;
+
+      const { error: profileError } = await supabase.from('profiles').upsert({
+        id: data.user.id,
+        display_name: displayName,
+        avatar_url: DEFAULT_AVATAR,
+        department,
+        year,
+        hobbies: [],
+        courses: [],
+        bio: '',
+      });
+      if (profileError) throw profileError;
+
+      const profile = await ensureProfile(data.user);
+      return {
+        user: mapProfileToUser(profile, data.user.email ?? email),
+        emailConfirmationRequired: false,
+      };
     },
-    onSuccess: (data) => {
-      setPendingVerification(data);
+    onSuccess: (result) => {
+      setUser(result.user);
+      queryClient.invalidateQueries();
     },
   });
-
-  const verifyEmailMutation = useMutation({
-    mutationFn: async (inputCode: string) => {
-      const storedData = await AsyncStorage.getItem(VERIFICATION_STORAGE_KEY);
-      if (!storedData) {
-        throw new Error('認証セッションが見つかりません。もう一度登録してください');
-      }
-      
-      const verification: PendingVerification = JSON.parse(storedData);
-      
-      if (Date.now() > verification.expiresAt) {
-        await AsyncStorage.removeItem(VERIFICATION_STORAGE_KEY);
-        throw new Error('認証コードの有効期限が切れました。もう一度登録してください');
-      }
-      
-      if (verification.code !== inputCode) {
-        throw new Error('認証コードが正しくありません');
-      }
-      
-      const newUser: User = {
-        ...verification.userData,
-        id: `user-${Date.now()}`,
-        createdAt: new Date().toISOString(),
-        profileCompleted: false,
-        emailVerified: true,
-      };
-      
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(newUser));
-      await AsyncStorage.removeItem(VERIFICATION_STORAGE_KEY);
-      
-      return newUser;
-    },
-    onSuccess: (data) => {
-      setUser(data);
-      setPendingVerification(null);
-      verificationCodeRef.current = null;
-      queryClient.invalidateQueries({ queryKey: ['auth'] });
-    },
-  });
-
-  const resendVerificationMutation = useMutation({
-    mutationFn: async () => {
-      if (!pendingVerification) {
-        throw new Error('保留中の認証がありません');
-      }
-      
-      const code = generateVerificationCode();
-      verificationCodeRef.current = code;
-      
-      const newVerification: PendingVerification = {
-        ...pendingVerification,
-        code,
-        expiresAt: Date.now() + 10 * 60 * 1000,
-      };
-      
-      await AsyncStorage.setItem(VERIFICATION_STORAGE_KEY, JSON.stringify(newVerification));
-      
-      console.log(`[EMAIL VERIFICATION] Resent code for ${pendingVerification.email}: ${code}`);
-      
-      if (Platform.OS === 'web') {
-        alert(`新しい認証コード: ${code}\n\n※デモ用：実際のアプリではメールで送信されます`);
-      } else {
-        Alert.alert(
-          'コード再送信',
-          `新しい認証コードを送信しました\n\n【デモ用】認証コード: ${code}`,
-          [{ text: 'OK' }]
-        );
-      }
-      
-      return newVerification;
-    },
-    onSuccess: (data) => {
-      setPendingVerification(data);
-    },
-  });
-
-  const cancelVerification = useCallback(async () => {
-    await AsyncStorage.removeItem(VERIFICATION_STORAGE_KEY);
-    setPendingVerification(null);
-    verificationCodeRef.current = null;
-  }, []);
 
   const updateProfileMutation = useMutation({
     mutationFn: async (updates: Partial<User>) => {
       if (!user) throw new Error('ログインが必要です');
-      
-      const updatedUser = { ...user, ...updates };
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(updatedUser));
-      return updatedUser;
+
+      const payload: Record<string, unknown> = {};
+      if (updates.displayName !== undefined) payload.display_name = updates.displayName;
+      if (updates.avatarUrl !== undefined) payload.avatar_url = updates.avatarUrl;
+      if (updates.department !== undefined) payload.department = updates.department;
+      if (updates.year !== undefined) payload.year = updates.year;
+      if (updates.hobbies !== undefined) payload.hobbies = updates.hobbies;
+      if (updates.courses !== undefined) payload.courses = updates.courses;
+      if (updates.bio !== undefined) payload.bio = updates.bio;
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .update(payload)
+        .eq('id', user.id)
+        .select('*')
+        .single<ProfileRow>();
+      if (error) throw error;
+
+      return mapProfileToUser(data, user.email);
     },
-    onSuccess: (data) => {
-      setUser(data);
-      queryClient.invalidateQueries({ queryKey: ['auth'] });
+    onSuccess: (nextUser) => {
+      setUser(nextUser);
+      queryClient.invalidateQueries();
     },
   });
 
   const logout = useCallback(async () => {
-    await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
     setUser(null);
-    queryClient.invalidateQueries({ queryKey: ['auth'] });
+    queryClient.invalidateQueries();
   }, [queryClient]);
 
-  const isProfileComplete = (u: User | null): boolean => {
-    if (!u) return false;
-    return u.profileCompleted === true && 
-      u.displayName.trim().length > 0 && 
-      u.hobbies.length > 0 && 
-      u.courses.length > 0;
-  };
+  const needsProfileSetup = useMemo(() => {
+    if (!user) return false;
+    return (
+      user.displayName.trim().length === 0 ||
+      user.department.trim().length === 0 ||
+      user.hobbies.length === 0 ||
+      user.courses.length === 0
+    );
+  }, [user]);
 
   return {
     user,
     isAuthenticated: !!user,
-    isLoading: isLoading || authQuery.isLoading,
+    isLoading,
     login: loginMutation.mutateAsync,
-    sendVerification: sendVerificationMutation.mutateAsync,
-    verifyEmail: verifyEmailMutation.mutateAsync,
-    resendVerification: resendVerificationMutation.mutateAsync,
-    cancelVerification,
+    register: registerMutation.mutateAsync,
     updateProfile: updateProfileMutation.mutateAsync,
     logout,
     loginError: loginMutation.error?.message,
-    verificationError: sendVerificationMutation.error?.message || verifyEmailMutation.error?.message,
+    registerError: registerMutation.error?.message,
     isLoginLoading: loginMutation.isPending,
-    isSendingVerification: sendVerificationMutation.isPending,
-    isVerifying: verifyEmailMutation.isPending,
-    isResending: resendVerificationMutation.isPending,
-    pendingVerification,
-    needsProfileSetup: user ? !isProfileComplete(user) : false,
+    isRegistering: registerMutation.isPending,
+    needsProfileSetup,
   };
 });

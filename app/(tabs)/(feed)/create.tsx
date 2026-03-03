@@ -39,8 +39,17 @@ export default function CreatePostScreen() {
   };
 
   const handlePost = async () => {
-    if (!content.trim() || !user) {
+    if (!content.trim()) {
       Alert.alert('エラー', '投稿内容を入力してください');
+      return;
+    }
+    if (!user) {
+      Alert.alert('エラー', 'ログインしてください', [
+        {
+          text: 'ログインへ',
+          onPress: () => router.replace('/(auth)/login' as any),
+        },
+      ]);
       return;
     }
 

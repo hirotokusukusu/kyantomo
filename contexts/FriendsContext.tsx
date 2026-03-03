@@ -1,78 +1,106 @@
 import createContextHook from '@nkzw/create-context-hook';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { FriendRequest, Friendship } from '@/types';
 import { useAuth } from './AuthContext';
+import { supabase } from '@/lib/supabase';
 
-const FRIEND_REQUESTS_KEY = 'friend_requests';
-const FRIENDSHIPS_KEY = 'friendships';
+type FriendRequestRow = {
+  id: string;
+  from_user_id: string;
+  to_user_id: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+};
+
+type FriendshipRow = {
+  id: string;
+  user_id1: string;
+  user_id2: string;
+  created_at: string;
+};
+
+const normalizePair = (a: string, b: string) => (a < b ? [a, b] : [b, a]);
 
 export const [FriendsProvider, useFriends] = createContextHook(() => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
-  const [friendships, setFriendships] = useState<Friendship[]>([]);
 
   const requestsQuery = useQuery({
-    queryKey: ['friendRequests'],
+    queryKey: ['friendRequests', user?.id],
+    enabled: !!user,
     queryFn: async () => {
-      const stored = await AsyncStorage.getItem(FRIEND_REQUESTS_KEY);
-      return stored ? JSON.parse(stored) as FriendRequest[] : [];
+      if (!user) return [];
+      const { data, error } = await supabase
+        .from('friend_requests')
+        .select('*')
+        .or(`from_user_id.eq.${user.id},to_user_id.eq.${user.id}`)
+        .order('created_at', { ascending: false })
+        .returns<FriendRequestRow[]>();
+      if (error) throw error;
+
+      return (data ?? []).map<FriendRequest>((row) => ({
+        id: row.id,
+        fromUserId: row.from_user_id,
+        toUserId: row.to_user_id,
+        status: row.status,
+        createdAt: row.created_at,
+      }));
     },
   });
 
   const friendshipsQuery = useQuery({
-    queryKey: ['friendships'],
+    queryKey: ['friendships', user?.id],
+    enabled: !!user,
     queryFn: async () => {
-      const stored = await AsyncStorage.getItem(FRIENDSHIPS_KEY);
-      return stored ? JSON.parse(stored) as Friendship[] : [];
+      if (!user) return [];
+      const { data, error } = await supabase
+        .from('friendships')
+        .select('*')
+        .or(`user_id1.eq.${user.id},user_id2.eq.${user.id}`)
+        .returns<FriendshipRow[]>();
+      if (error) throw error;
+
+      return (data ?? []).map<Friendship>((row) => ({
+        id: row.id,
+        userId1: row.user_id1,
+        userId2: row.user_id2,
+        createdAt: row.created_at,
+      }));
     },
   });
 
-  useEffect(() => {
-    if (requestsQuery.data) {
-      setFriendRequests(requestsQuery.data);
-    }
-  }, [requestsQuery.data]);
-
-  useEffect(() => {
-    if (friendshipsQuery.data) {
-      setFriendships(friendshipsQuery.data);
-    }
-  }, [friendshipsQuery.data]);
+  const friendRequests = requestsQuery.data ?? [];
+  const friendships = friendshipsQuery.data ?? [];
 
   const sendRequestMutation = useMutation({
     mutationFn: async (toUserId: string) => {
       if (!user) throw new Error('ログインが必要です');
-      
-      const existingRequest = friendRequests.find(
-        r => (r.fromUserId === user.id && r.toUserId === toUserId) ||
-             (r.fromUserId === toUserId && r.toUserId === user.id)
-      );
-      if (existingRequest) throw new Error('すでにリクエストが存在します');
+      if (toUserId === user.id) throw new Error('自分には送信できません');
 
-      const isFriend = friendships.some(
-        f => (f.userId1 === user.id && f.userId2 === toUserId) ||
-             (f.userId1 === toUserId && f.userId2 === user.id)
+      const exists = friendRequests.some(
+        (r) =>
+          (r.fromUserId === user.id && r.toUserId === toUserId && r.status === 'pending') ||
+          (r.fromUserId === toUserId && r.toUserId === user.id && r.status === 'pending'),
       );
-      if (isFriend) throw new Error('すでに友達です');
+      if (exists) throw new Error('すでにリクエストが存在します');
 
-      const newRequest: FriendRequest = {
-        id: `request-${Date.now()}`,
-        fromUserId: user.id,
-        toUserId,
+      const alreadyFriend = friendships.some(
+        (f) =>
+          (f.userId1 === user.id && f.userId2 === toUserId) ||
+          (f.userId1 === toUserId && f.userId2 === user.id),
+      );
+      if (alreadyFriend) throw new Error('すでに友達です');
+
+      const { error } = await supabase.from('friend_requests').insert({
+        from_user_id: user.id,
+        to_user_id: toUserId,
         status: 'pending',
-        createdAt: new Date().toISOString(),
-      };
-
-      const updated = [...friendRequests, newRequest];
-      await AsyncStorage.setItem(FRIEND_REQUESTS_KEY, JSON.stringify(updated));
-      return updated;
+      });
+      if (error) throw error;
     },
-    onSuccess: (data) => {
-      setFriendRequests(data);
-      queryClient.invalidateQueries({ queryKey: ['friendRequests'] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['friendRequests', user?.id] });
     },
   });
 
@@ -80,44 +108,39 @@ export const [FriendsProvider, useFriends] = createContextHook(() => {
     mutationFn: async (requestId: string) => {
       if (!user) throw new Error('ログインが必要です');
 
-      const request = friendRequests.find(r => r.id === requestId);
+      const request = friendRequests.find((r) => r.id === requestId);
       if (!request) throw new Error('リクエストが見つかりません');
+      if (request.toUserId !== user.id) throw new Error('承認権限がありません');
 
-      const updatedRequests = friendRequests.map(r =>
-        r.id === requestId ? { ...r, status: 'accepted' as const } : r
+      const { error: updateError } = await supabase
+        .from('friend_requests')
+        .update({ status: 'accepted' })
+        .eq('id', requestId);
+      if (updateError) throw updateError;
+
+      const [userId1, userId2] = normalizePair(request.fromUserId, request.toUserId);
+      const { error: friendshipError } = await supabase.from('friendships').upsert(
+        {
+          user_id1: userId1,
+          user_id2: userId2,
+        },
+        { onConflict: 'user_id1,user_id2' },
       );
-
-      const newFriendship: Friendship = {
-        id: `friendship-${Date.now()}`,
-        userId1: request.fromUserId,
-        userId2: request.toUserId,
-        createdAt: new Date().toISOString(),
-      };
-
-      const updatedFriendships = [...friendships, newFriendship];
-
-      await AsyncStorage.setItem(FRIEND_REQUESTS_KEY, JSON.stringify(updatedRequests));
-      await AsyncStorage.setItem(FRIENDSHIPS_KEY, JSON.stringify(updatedFriendships));
-
-      return { requests: updatedRequests, friendships: updatedFriendships };
+      if (friendshipError) throw friendshipError;
     },
-    onSuccess: (data) => {
-      setFriendRequests(data.requests);
-      setFriendships(data.friendships);
-      queryClient.invalidateQueries({ queryKey: ['friendRequests'] });
-      queryClient.invalidateQueries({ queryKey: ['friendships'] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['friendRequests', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['friendships', user?.id] });
     },
   });
 
   const rejectRequestMutation = useMutation({
     mutationFn: async (requestId: string) => {
-      const updatedRequests = friendRequests.filter(r => r.id !== requestId);
-      await AsyncStorage.setItem(FRIEND_REQUESTS_KEY, JSON.stringify(updatedRequests));
-      return updatedRequests;
+      const { error } = await supabase.from('friend_requests').delete().eq('id', requestId);
+      if (error) throw error;
     },
-    onSuccess: (data) => {
-      setFriendRequests(data);
-      queryClient.invalidateQueries({ queryKey: ['friendRequests'] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['friendRequests', user?.id] });
     },
   });
 
@@ -125,73 +148,76 @@ export const [FriendsProvider, useFriends] = createContextHook(() => {
     mutationFn: async (friendUserId: string) => {
       if (!user) throw new Error('ログインが必要です');
 
-      const updatedFriendships = friendships.filter(
-        f => !((f.userId1 === user.id && f.userId2 === friendUserId) ||
-               (f.userId1 === friendUserId && f.userId2 === user.id))
-      );
+      const [userId1, userId2] = normalizePair(user.id, friendUserId);
+      const { error: friendshipError } = await supabase
+        .from('friendships')
+        .delete()
+        .eq('user_id1', userId1)
+        .eq('user_id2', userId2);
+      if (friendshipError) throw friendshipError;
 
-      const updatedRequests = friendRequests.filter(
-        r => !((r.fromUserId === user.id && r.toUserId === friendUserId) ||
-               (r.fromUserId === friendUserId && r.toUserId === user.id))
-      );
-
-      await AsyncStorage.setItem(FRIENDSHIPS_KEY, JSON.stringify(updatedFriendships));
-      await AsyncStorage.setItem(FRIEND_REQUESTS_KEY, JSON.stringify(updatedRequests));
-
-      return { friendships: updatedFriendships, requests: updatedRequests };
+      await supabase
+        .from('friend_requests')
+        .delete()
+        .or(
+          `and(from_user_id.eq.${user.id},to_user_id.eq.${friendUserId}),and(from_user_id.eq.${friendUserId},to_user_id.eq.${user.id})`,
+        );
     },
-    onSuccess: (data) => {
-      setFriendships(data.friendships);
-      setFriendRequests(data.requests);
-      queryClient.invalidateQueries({ queryKey: ['friendships'] });
-      queryClient.invalidateQueries({ queryKey: ['friendRequests'] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['friendships', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['friendRequests', user?.id] });
     },
   });
 
   const pendingRequests = useMemo(() => {
     if (!user) return [];
-    return friendRequests.filter(r => r.toUserId === user.id && r.status === 'pending');
+    return friendRequests.filter((r) => r.toUserId === user.id && r.status === 'pending');
   }, [friendRequests, user]);
 
   const sentRequests = useMemo(() => {
     if (!user) return [];
-    return friendRequests.filter(r => r.fromUserId === user.id && r.status === 'pending');
+    return friendRequests.filter((r) => r.fromUserId === user.id && r.status === 'pending');
   }, [friendRequests, user]);
 
   const friends = useMemo(() => {
     if (!user) return [];
     return friendships
-      .filter(f => f.userId1 === user.id || f.userId2 === user.id)
-      .map(f => f.userId1 === user.id ? f.userId2 : f.userId1);
+      .filter((f) => f.userId1 === user.id || f.userId2 === user.id)
+      .map((f) => (f.userId1 === user.id ? f.userId2 : f.userId1));
   }, [friendships, user]);
 
-  const isFriend = useCallback((userId: string) => {
-    return friends.includes(userId);
-  }, [friends]);
+  const isFriend = useCallback((userId: string) => friends.includes(userId), [friends]);
 
-  const hasPendingRequest = useCallback((userId: string) => {
-    if (!user) return false;
-    return friendRequests.some(
-      r => r.status === 'pending' &&
-           ((r.fromUserId === user.id && r.toUserId === userId) ||
-            (r.fromUserId === userId && r.toUserId === user.id))
-    );
-  }, [friendRequests, user]);
+  const hasPendingRequest = useCallback(
+    (userId: string) => {
+      if (!user) return false;
+      return friendRequests.some(
+        (r) =>
+          r.status === 'pending' &&
+          ((r.fromUserId === user.id && r.toUserId === userId) ||
+            (r.fromUserId === userId && r.toUserId === user.id)),
+      );
+    },
+    [friendRequests, user],
+  );
 
-  const getRequestStatus = useCallback((userId: string): 'none' | 'sent' | 'received' | 'friend' => {
-    if (!user) return 'none';
-    if (isFriend(userId)) return 'friend';
-    
-    const request = friendRequests.find(
-      r => r.status === 'pending' &&
-           ((r.fromUserId === user.id && r.toUserId === userId) ||
-            (r.fromUserId === userId && r.toUserId === user.id))
-    );
-    
-    if (!request) return 'none';
-    if (request.fromUserId === user.id) return 'sent';
-    return 'received';
-  }, [friendRequests, user, isFriend]);
+  const getRequestStatus = useCallback(
+    (userId: string): 'none' | 'sent' | 'received' | 'friend' => {
+      if (!user) return 'none';
+      if (isFriend(userId)) return 'friend';
+
+      const request = friendRequests.find(
+        (r) =>
+          r.status === 'pending' &&
+          ((r.fromUserId === user.id && r.toUserId === userId) ||
+            (r.fromUserId === userId && r.toUserId === user.id)),
+      );
+
+      if (!request) return 'none';
+      return request.fromUserId === user.id ? 'sent' : 'received';
+    },
+    [friendRequests, isFriend, user],
+  );
 
   return {
     friendRequests,

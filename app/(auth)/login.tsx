@@ -38,15 +38,6 @@ export default function LoginScreen() {
     }
   };
 
-  const handleDemoLogin = async () => {
-    try {
-      await login({ email: 'tanaka@kwansei.ac.jp', password: 'demo' });
-      router.replace('/(tabs)' as any);
-    } catch (error) {
-      Alert.alert('エラー', 'デモログインに失敗しました');
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
@@ -112,13 +103,6 @@ export default function LoginScreen() {
               )}
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.demoButton}
-              onPress={handleDemoLogin}
-              disabled={isLoginLoading}
-            >
-              <Text style={styles.demoButtonText}>デモアカウントでログイン</Text>
-            </TouchableOpacity>
           </View>
 
           <View style={styles.footer}>
@@ -213,18 +197,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600' as const,
-  },
-  demoButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surfaceHover,
-    borderRadius: 16,
-    height: 48,
-  },
-  demoButtonText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: '500' as const,
   },
   footer: {
     flexDirection: 'row',

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -13,244 +13,52 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Mail, Lock, User, BookOpen, ChevronDown, Shield, RefreshCw } from 'lucide-react-native';
+import { ArrowLeft, Mail, Lock, User, BookOpen, ChevronDown } from 'lucide-react-native';
 import { colors } from '@/constants/colors';
 import { UNIVERSITY_EMAIL_DOMAIN, DEPARTMENTS } from '@/constants/university';
 import { useAuth } from '@/contexts/AuthContext';
 
 export default function RegisterScreen() {
   const router = useRouter();
-  const { 
-    sendVerification, 
-    verifyEmail, 
-    resendVerification,
-    cancelVerification,
-    isSendingVerification, 
-    isVerifying,
-    isResending,
-    pendingVerification 
-  } = useAuth();
-  
+  const { register, isRegistering } = useAuth();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [department, setDepartment] = useState('');
   const [year, setYear] = useState('1');
   const [showDepartmentPicker, setShowDepartmentPicker] = useState(false);
-  
-  const [verificationCode, setVerificationCode] = useState(['', '', '', '', '', '']);
-  const codeInputRefs = useRef<(TextInput | null)[]>([]);
-  
-  const [countdown, setCountdown] = useState(0);
 
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [countdown]);
-
-  const handleSendVerification = async () => {
+  const handleRegister = async () => {
     if (!email.trim() || !password.trim() || !displayName.trim() || !department) {
       Alert.alert('エラー', '全ての項目を入力してください');
       return;
     }
-
     if (password.length < 6) {
       Alert.alert('エラー', 'パスワードは6文字以上で入力してください');
       return;
     }
 
     try {
-      await sendVerification({
+      const result = await register({
         email: email.trim(),
+        password,
         displayName: displayName.trim(),
-        avatarUrl: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&h=150&fit=crop&crop=face`,
         department,
         year: parseInt(year, 10),
-        hobbies: [],
-        courses: [],
-        bio: '',
       });
-      setCountdown(60);
-    } catch (error) {
-      Alert.alert('エラー', error instanceof Error ? error.message : '認証コードの送信に失敗しました');
-    }
-  };
 
-  const handleCodeChange = (text: string, index: number) => {
-    if (text.length > 1) {
-      const chars = text.split('').slice(0, 6);
-      const newCode = [...verificationCode];
-      chars.forEach((char, i) => {
-        if (index + i < 6) {
-          newCode[index + i] = char;
-        }
-      });
-      setVerificationCode(newCode);
-      const nextIndex = Math.min(index + chars.length, 5);
-      codeInputRefs.current[nextIndex]?.focus();
-      return;
-    }
+      if (result.emailConfirmationRequired) {
+        Alert.alert('確認メールを送信しました', 'メール確認後にログインしてください。');
+        router.replace('/(auth)/login' as any);
+        return;
+      }
 
-    const newCode = [...verificationCode];
-    newCode[index] = text;
-    setVerificationCode(newCode);
-
-    if (text && index < 5) {
-      codeInputRefs.current[index + 1]?.focus();
-    }
-  };
-
-  const handleCodeKeyPress = (key: string, index: number) => {
-    if (key === 'Backspace' && !verificationCode[index] && index > 0) {
-      codeInputRefs.current[index - 1]?.focus();
-    }
-  };
-
-  const handleVerify = async () => {
-    const code = verificationCode.join('');
-    if (code.length !== 6) {
-      Alert.alert('エラー', '6桁の認証コードを入力してください');
-      return;
-    }
-
-    try {
-      await verifyEmail(code);
       router.replace('/(auth)/setup-profile' as any);
     } catch (error) {
-      Alert.alert('認証エラー', error instanceof Error ? error.message : '認証に失敗しました');
-      setVerificationCode(['', '', '', '', '', '']);
+      Alert.alert('登録エラー', error instanceof Error ? error.message : '登録に失敗しました');
     }
   };
-
-  const handleResend = async () => {
-    if (countdown > 0) return;
-    
-    try {
-      await resendVerification();
-      setCountdown(60);
-      setVerificationCode(['', '', '', '', '', '']);
-    } catch (error) {
-      Alert.alert('エラー', error instanceof Error ? error.message : '再送信に失敗しました');
-    }
-  };
-
-  const handleBack = () => {
-    if (pendingVerification) {
-      Alert.alert(
-        '登録をキャンセル',
-        '認証を中断しますか？入力した情報は失われます。',
-        [
-          { text: 'いいえ', style: 'cancel' },
-          { 
-            text: 'はい', 
-            style: 'destructive',
-            onPress: async () => {
-              await cancelVerification();
-              router.back();
-            }
-          },
-        ]
-      );
-    } else {
-      router.back();
-    }
-  };
-
-  if (pendingVerification) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.keyboardView}
-        >
-          <ScrollView
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <TouchableOpacity style={styles.backButton} onPress={handleBack}>
-              <ArrowLeft size={24} color={colors.text} />
-            </TouchableOpacity>
-
-            <View style={styles.verificationHeader}>
-              <View style={styles.verificationIconContainer}>
-                <Shield size={48} color={colors.primary} />
-              </View>
-              <Text style={styles.title}>メール認証</Text>
-              <Text style={styles.verificationSubtitle}>
-                以下のメールアドレスに認証コードを送信しました
-              </Text>
-              <Text style={styles.emailDisplay}>{pendingVerification.email}</Text>
-            </View>
-
-            <View style={styles.codeContainer}>
-              <Text style={styles.codeLabel}>6桁の認証コードを入力</Text>
-              <View style={styles.codeInputs}>
-                {verificationCode.map((digit, index) => (
-                  <TextInput
-                    key={index}
-                    ref={(ref) => { codeInputRefs.current[index] = ref; }}
-                    style={[
-                      styles.codeInput,
-                      digit && styles.codeInputFilled,
-                    ]}
-                    value={digit}
-                    onChangeText={(text) => handleCodeChange(text, index)}
-                    onKeyPress={({ nativeEvent }) => handleCodeKeyPress(nativeEvent.key, index)}
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    selectTextOnFocus
-                    testID={`code-input-${index}`}
-                  />
-                ))}
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.verifyButton, isVerifying && styles.buttonDisabled]}
-              onPress={handleVerify}
-              disabled={isVerifying}
-              testID="verify-button"
-            >
-              {isVerifying ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.verifyButtonText}>認証する</Text>
-              )}
-            </TouchableOpacity>
-
-            <View style={styles.resendContainer}>
-              <Text style={styles.resendText}>コードが届きませんか？</Text>
-              <TouchableOpacity
-                style={[styles.resendButton, (countdown > 0 || isResending) && styles.resendButtonDisabled]}
-                onPress={handleResend}
-                disabled={countdown > 0 || isResending}
-              >
-                {isResending ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
-                ) : (
-                  <>
-                    <RefreshCw size={16} color={countdown > 0 ? colors.textMuted : colors.primary} />
-                    <Text style={[styles.resendButtonText, countdown > 0 && styles.resendButtonTextDisabled]}>
-                      {countdown > 0 ? `再送信 (${countdown}秒)` : '再送信'}
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.notice}>
-              <Text style={styles.noticeText}>
-                ※ 認証コードの有効期限は10分間です
-              </Text>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -263,13 +71,13 @@ export default function RegisterScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <ArrowLeft size={24} color={colors.text} />
           </TouchableOpacity>
 
           <View style={styles.header}>
             <Text style={styles.title}>新規登録</Text>
-            <Text style={styles.subtitle}>プロフィールを作成しよう</Text>
+            <Text style={styles.subtitle}>Supabase にアカウントを作成します</Text>
           </View>
 
           <View style={styles.form}>
@@ -281,7 +89,6 @@ export default function RegisterScreen() {
                 placeholderTextColor={colors.textMuted}
                 value={displayName}
                 onChangeText={setDisplayName}
-                autoCapitalize="none"
                 testID="name-input"
               />
             </View>
@@ -332,10 +139,7 @@ export default function RegisterScreen() {
                   {DEPARTMENTS.map((dept) => (
                     <TouchableOpacity
                       key={dept}
-                      style={[
-                        styles.pickerItem,
-                        department === dept && styles.pickerItemSelected,
-                      ]}
+                      style={[styles.pickerItem, department === dept && styles.pickerItemSelected]}
                       onPress={() => {
                         setDepartment(dept);
                         setShowDepartmentPicker(false);
@@ -364,9 +168,7 @@ export default function RegisterScreen() {
                     style={[styles.yearButton, year === y && styles.yearButtonSelected]}
                     onPress={() => setYear(y)}
                   >
-                    <Text
-                      style={[styles.yearButtonText, year === y && styles.yearButtonTextSelected]}
-                    >
+                    <Text style={[styles.yearButtonText, year === y && styles.yearButtonTextSelected]}>
                       {y}年
                     </Text>
                   </TouchableOpacity>
@@ -375,23 +177,17 @@ export default function RegisterScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.registerButton, isSendingVerification && styles.buttonDisabled]}
-              onPress={handleSendVerification}
-              disabled={isSendingVerification}
+              style={[styles.registerButton, isRegistering && styles.buttonDisabled]}
+              onPress={handleRegister}
+              disabled={isRegistering}
               testID="register-button"
             >
-              {isSendingVerification ? (
+              {isRegistering ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.registerButtonText}>認証コードを送信</Text>
+                <Text style={styles.registerButtonText}>登録する</Text>
               )}
             </TouchableOpacity>
-          </View>
-
-          <View style={styles.notice}>
-            <Text style={styles.noticeText}>
-              登録することで利用規約とプライバシーポリシーに同意したものとみなされます
-            </Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -548,112 +344,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600' as const,
-  },
-  notice: {
-    marginTop: 24,
-    alignItems: 'center',
-  },
-  noticeText: {
-    color: colors.textMuted,
-    fontSize: 12,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  verificationHeader: {
-    alignItems: 'center',
-    marginBottom: 40,
-  },
-  verificationIconContainer: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: colors.tag,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-  },
-  verificationSubtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  emailDisplay: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: colors.primary,
-    marginTop: 8,
-  },
-  codeContainer: {
-    marginBottom: 32,
-  },
-  codeLabel: {
-    fontSize: 14,
-    fontWeight: '500' as const,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  codeInputs: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  codeInput: {
-    width: 48,
-    height: 56,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    fontSize: 24,
-    fontWeight: '600' as const,
-    textAlign: 'center',
-    color: colors.text,
-  },
-  codeInputFilled: {
-    borderColor: colors.primary,
-    backgroundColor: colors.tag,
-  },
-  verifyButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 16,
-    height: 56,
-  },
-  verifyButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600' as const,
-  },
-  resendContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 24,
-    gap: 8,
-  },
-  resendText: {
-    fontSize: 14,
-    color: colors.textSecondary,
-  },
-  resendButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  resendButtonDisabled: {
-    opacity: 0.5,
-  },
-  resendButtonText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: colors.primary,
-  },
-  resendButtonTextDisabled: {
-    color: colors.textMuted,
   },
 });

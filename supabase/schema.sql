@@ -126,6 +126,67 @@ for each row execute function public.set_updated_at();
 create index if not exists post_comments_post_created_idx on public.post_comments (post_id, created_at asc);
 
 -- ==================
+-- Friend requests
+-- ==================
+create table if not exists public.friend_requests (
+  id uuid primary key default gen_random_uuid(),
+  from_user_id uuid not null references public.profiles(id) on delete cascade,
+  to_user_id uuid not null references public.profiles(id) on delete cascade,
+  status text not null check (status in ('pending', 'accepted', 'rejected')) default 'pending',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (from_user_id <> to_user_id)
+);
+
+drop trigger if exists friend_requests_set_updated_at on public.friend_requests;
+create trigger friend_requests_set_updated_at
+before update on public.friend_requests
+for each row execute function public.set_updated_at();
+
+create unique index if not exists friend_requests_pending_pair_uq
+on public.friend_requests (
+  least(from_user_id, to_user_id),
+  greatest(from_user_id, to_user_id)
+)
+where status = 'pending';
+
+create index if not exists friend_requests_to_user_idx on public.friend_requests (to_user_id, status, created_at desc);
+create index if not exists friend_requests_from_user_idx on public.friend_requests (from_user_id, status, created_at desc);
+
+-- ==================
+-- Friendships
+-- ==================
+create table if not exists public.friendships (
+  id uuid primary key default gen_random_uuid(),
+  user_id1 uuid not null references public.profiles(id) on delete cascade,
+  user_id2 uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  check (user_id1 <> user_id2),
+  check (user_id1 < user_id2)
+);
+
+create unique index if not exists friendships_user_pair_uq on public.friendships (user_id1, user_id2);
+create index if not exists friendships_user1_idx on public.friendships (user_id1);
+create index if not exists friendships_user2_idx on public.friendships (user_id2);
+
+-- ==================
+-- Direct messages
+-- ==================
+create table if not exists public.messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references public.profiles(id) on delete cascade,
+  receiver_id uuid not null references public.profiles(id) on delete cascade,
+  content text not null check (char_length(content) between 1 and 2000),
+  is_read boolean not null default false,
+  created_at timestamptz not null default now(),
+  check (sender_id <> receiver_id)
+);
+
+create index if not exists messages_sender_created_idx on public.messages (sender_id, created_at desc);
+create index if not exists messages_receiver_created_idx on public.messages (receiver_id, created_at desc);
+create index if not exists messages_receiver_unread_idx on public.messages (receiver_id, is_read, created_at desc);
+
+-- ==================
 -- Convenience views
 -- ==================
 -- Counts used by UI (likes count, comments count)
@@ -303,6 +364,80 @@ create policy "post_comments_delete_owner"
 on public.post_comments for delete
 to authenticated
 using (author_id = auth.uid());
+
+-- Friend requests
+alter table public.friend_requests enable row level security;
+
+drop policy if exists "friend_requests_select_participant" on public.friend_requests;
+create policy "friend_requests_select_participant"
+on public.friend_requests for select
+to authenticated
+using (from_user_id = auth.uid() or to_user_id = auth.uid());
+
+drop policy if exists "friend_requests_insert_sender" on public.friend_requests;
+create policy "friend_requests_insert_sender"
+on public.friend_requests for insert
+to authenticated
+with check (from_user_id = auth.uid());
+
+drop policy if exists "friend_requests_update_receiver" on public.friend_requests;
+create policy "friend_requests_update_receiver"
+on public.friend_requests for update
+to authenticated
+using (to_user_id = auth.uid())
+with check (to_user_id = auth.uid());
+
+drop policy if exists "friend_requests_delete_participant" on public.friend_requests;
+create policy "friend_requests_delete_participant"
+on public.friend_requests for delete
+to authenticated
+using (from_user_id = auth.uid() or to_user_id = auth.uid());
+
+-- Friendships
+alter table public.friendships enable row level security;
+
+drop policy if exists "friendships_select_participant" on public.friendships;
+create policy "friendships_select_participant"
+on public.friendships for select
+to authenticated
+using (user_id1 = auth.uid() or user_id2 = auth.uid());
+
+drop policy if exists "friendships_insert_participant" on public.friendships;
+create policy "friendships_insert_participant"
+on public.friendships for insert
+to authenticated
+with check (
+  (user_id1 = auth.uid() or user_id2 = auth.uid())
+  and user_id1 < user_id2
+);
+
+drop policy if exists "friendships_delete_participant" on public.friendships;
+create policy "friendships_delete_participant"
+on public.friendships for delete
+to authenticated
+using (user_id1 = auth.uid() or user_id2 = auth.uid());
+
+-- Messages
+alter table public.messages enable row level security;
+
+drop policy if exists "messages_select_participant" on public.messages;
+create policy "messages_select_participant"
+on public.messages for select
+to authenticated
+using (sender_id = auth.uid() or receiver_id = auth.uid());
+
+drop policy if exists "messages_insert_sender" on public.messages;
+create policy "messages_insert_sender"
+on public.messages for insert
+to authenticated
+with check (sender_id = auth.uid());
+
+drop policy if exists "messages_update_receiver" on public.messages;
+create policy "messages_update_receiver"
+on public.messages for update
+to authenticated
+using (receiver_id = auth.uid())
+with check (receiver_id = auth.uid());
 
 -- ==================
 -- Optional helper RPC: attach hashtags to a post in one call

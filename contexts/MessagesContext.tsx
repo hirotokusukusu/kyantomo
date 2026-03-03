@@ -1,149 +1,141 @@
 import createContextHook from '@nkzw/create-context-hook';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Message, Conversation } from '@/types';
 import { useAuth } from './AuthContext';
+import { supabase } from '@/lib/supabase';
 
-const MESSAGES_KEY = 'messages';
-const CONVERSATIONS_KEY = 'conversations';
+type MessageRow = {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  content: string;
+  is_read: boolean;
+  created_at: string;
+};
+
+const toConversationId = (userId1: string, userId2: string) => [userId1, userId2].sort().join('-');
 
 export const [MessagesProvider, useMessages] = createContextHook(() => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
 
   const messagesQuery = useQuery({
-    queryKey: ['messages'],
+    queryKey: ['messages', user?.id],
+    enabled: !!user,
     queryFn: async () => {
-      const stored = await AsyncStorage.getItem(MESSAGES_KEY);
-      return stored ? JSON.parse(stored) as Message[] : [];
+      if (!user) return [];
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+        .order('created_at', { ascending: true })
+        .returns<MessageRow[]>();
+      if (error) throw error;
+
+      return (data ?? []).map<Message>((row) => ({
+        id: row.id,
+        senderId: row.sender_id,
+        receiverId: row.receiver_id,
+        content: row.content,
+        isRead: row.is_read,
+        createdAt: row.created_at,
+      }));
     },
   });
 
-  const conversationsQuery = useQuery({
-    queryKey: ['conversations'],
-    queryFn: async () => {
-      const stored = await AsyncStorage.getItem(CONVERSATIONS_KEY);
-      return stored ? JSON.parse(stored) as Conversation[] : [];
-    },
-  });
-
-  useEffect(() => {
-    if (messagesQuery.data) {
-      setMessages(messagesQuery.data);
-    }
-  }, [messagesQuery.data]);
-
-  useEffect(() => {
-    if (conversationsQuery.data) {
-      setConversations(conversationsQuery.data);
-    }
-  }, [conversationsQuery.data]);
-
-  const getConversationId = useCallback((userId1: string, userId2: string) => {
-    return [userId1, userId2].sort().join('-');
-  }, []);
+  const messages = messagesQuery.data ?? [];
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ receiverId, content }: { receiverId: string; content: string }) => {
       if (!user) throw new Error('ログインが必要です');
-
-      const newMessage: Message = {
-        id: `msg-${Date.now()}`,
-        senderId: user.id,
-        receiverId,
+      const { error } = await supabase.from('messages').insert({
+        sender_id: user.id,
+        receiver_id: receiverId,
         content,
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
-
-      const updatedMessages = [...messages, newMessage];
-      
-      const conversationId = getConversationId(user.id, receiverId);
-      let updatedConversations = [...conversations];
-      const existingConvIndex = updatedConversations.findIndex(c => c.id === conversationId);
-
-      if (existingConvIndex >= 0) {
-        updatedConversations[existingConvIndex] = {
-          ...updatedConversations[existingConvIndex],
-          lastMessage: newMessage,
-          updatedAt: newMessage.createdAt,
-        };
-      } else {
-        const newConversation: Conversation = {
-          id: conversationId,
-          participantIds: [user.id, receiverId] as [string, string],
-          lastMessage: newMessage,
-          updatedAt: newMessage.createdAt,
-        };
-        updatedConversations.push(newConversation);
-      }
-
-      await AsyncStorage.setItem(MESSAGES_KEY, JSON.stringify(updatedMessages));
-      await AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updatedConversations));
-
-      return { messages: updatedMessages, conversations: updatedConversations };
+        is_read: false,
+      });
+      if (error) throw error;
     },
-    onSuccess: (data) => {
-      setMessages(data.messages);
-      setConversations(data.conversations);
-      queryClient.invalidateQueries({ queryKey: ['messages'] });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['messages', user?.id] });
     },
   });
 
   const markAsReadMutation = useMutation({
     mutationFn: async (otherUserId: string) => {
       if (!user) throw new Error('ログインが必要です');
-
-      const updatedMessages = messages.map(m =>
-        m.senderId === otherUserId && m.receiverId === user.id && !m.isRead
-          ? { ...m, isRead: true }
-          : m
-      );
-
-      await AsyncStorage.setItem(MESSAGES_KEY, JSON.stringify(updatedMessages));
-      return updatedMessages;
+      const { error } = await supabase
+        .from('messages')
+        .update({ is_read: true })
+        .eq('sender_id', otherUserId)
+        .eq('receiver_id', user.id)
+        .eq('is_read', false);
+      if (error) throw error;
     },
-    onSuccess: (data) => {
-      setMessages(data);
-      queryClient.invalidateQueries({ queryKey: ['messages'] });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['messages', user?.id] });
     },
   });
 
   const myConversations = useMemo(() => {
     if (!user) return [];
-    return conversations
-      .filter(c => c.participantIds.includes(user.id))
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  }, [conversations, user]);
 
-  const getConversationMessages = useCallback((otherUserId: string) => {
-    if (!user) return [];
-    return messages
-      .filter(m =>
-        (m.senderId === user.id && m.receiverId === otherUserId) ||
-        (m.senderId === otherUserId && m.receiverId === user.id)
-      )
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const byOtherUser = new Map<string, Message>();
+    messages.forEach((msg) => {
+      const other = msg.senderId === user.id ? msg.receiverId : msg.senderId;
+      const current = byOtherUser.get(other);
+      if (!current || new Date(msg.createdAt).getTime() > new Date(current.createdAt).getTime()) {
+        byOtherUser.set(other, msg);
+      }
+    });
+
+    const conversations = Array.from(byOtherUser.entries()).map<Conversation>(([otherUserId, lastMessage]) => ({
+      id: toConversationId(user.id, otherUserId),
+      participantIds: [user.id, otherUserId] as [string, string],
+      lastMessage,
+      updatedAt: lastMessage.createdAt,
+    }));
+
+    return conversations.sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    );
   }, [messages, user]);
 
-  const getUnreadCount = useCallback((otherUserId?: string) => {
-    if (!user) return 0;
-    if (otherUserId) {
-      return messages.filter(
-        m => m.senderId === otherUserId && m.receiverId === user.id && !m.isRead
-      ).length;
-    }
-    return messages.filter(m => m.receiverId === user.id && !m.isRead).length;
-  }, [messages, user]);
+  const getConversationMessages = useCallback(
+    (otherUserId: string) => {
+      if (!user) return [];
+      return messages
+        .filter(
+          (m) =>
+            (m.senderId === user.id && m.receiverId === otherUserId) ||
+            (m.senderId === otherUserId && m.receiverId === user.id),
+        )
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    },
+    [messages, user],
+  );
 
-  const getOtherParticipant = useCallback((conversation: Conversation) => {
-    if (!user) return null;
-    return conversation.participantIds.find(id => id !== user.id) || null;
-  }, [user]);
+  const getUnreadCount = useCallback(
+    (otherUserId?: string) => {
+      if (!user) return 0;
+      if (otherUserId) {
+        return messages.filter(
+          (m) => m.senderId === otherUserId && m.receiverId === user.id && !m.isRead,
+        ).length;
+      }
+      return messages.filter((m) => m.receiverId === user.id && !m.isRead).length;
+    },
+    [messages, user],
+  );
+
+  const getOtherParticipant = useCallback(
+    (conversation: Conversation) => {
+      if (!user) return null;
+      return conversation.participantIds.find((id) => id !== user.id) || null;
+    },
+    [user],
+  );
 
   return {
     messages,
@@ -153,7 +145,7 @@ export const [MessagesProvider, useMessages] = createContextHook(() => {
     getConversationMessages,
     getUnreadCount,
     getOtherParticipant,
-    isLoading: messagesQuery.isLoading || conversationsQuery.isLoading,
+    isLoading: messagesQuery.isLoading,
     isSending: sendMessageMutation.isPending,
   };
 });
