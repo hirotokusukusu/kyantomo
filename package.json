@@ -9,6 +9,7 @@
     "start-web-tunnel": "bunx rork start -p sr1e81atgckoe84rfdcj7 --web --tunnel",
     "start-web-dev": "DEBUG=expo* bunx rork start -p sr1e81atgckoe84rfdcj7 --web",
     "start-web-dev-tunnel": "DEBUG=expo* bunx rork start -p sr1e81atgckoe84rfdcj7 --web --tunnel",
+    "build": "expo export -p web",
     "lint": "expo lint"
   },
   "dependencies": {
@@ -58,4 +59,3 @@
   },
   "private": true
 }
-
