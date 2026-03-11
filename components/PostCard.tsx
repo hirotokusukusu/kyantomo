@@ -1,15 +1,23 @@
-import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Heart, MessageCircle } from 'lucide-react-native';
-import { colors } from '@/constants/colors';
-import { Post, User } from '@/types';
-import { useUsers } from '@/hooks/useUsers';
-import { usePosts } from '@/contexts/PostsContext';
-import { useAuth } from '@/contexts/AuthContext';
+import { Heart, MessageCircle, Trash2 } from "lucide-react-native";
+import {
+  Alert,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Image,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { colors } from "@/constants/colors";
+import { Post, User } from "@/types";
+import { useUsers } from "@/hooks/useUsers";
+import { usePosts } from "@/contexts/PostsContext";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface PostCardProps {
   post: Post;
   onPress?: () => void;
+  onDelete?: () => void;
 }
 
 function formatTimeAgo(dateString: string): string {
@@ -20,19 +28,19 @@ function formatTimeAgo(dateString: string): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 1) return 'たった今';
+  if (diffMins < 1) return "たった今";
   if (diffMins < 60) return `${diffMins}分前`;
   if (diffHours < 24) return `${diffHours}時間前`;
   if (diffDays < 7) return `${diffDays}日前`;
-  return date.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString("ja-JP", { month: "short", day: "numeric" });
 }
 
-export default function PostCard({ post, onPress }: PostCardProps) {
+export default function PostCard({ post, onPress, onDelete }: PostCardProps) {
   const router = useRouter();
   const { getUserById } = useUsers();
-  const { toggleLike } = usePosts();
+  const { toggleLike, deletePost } = usePosts();
   const { user: currentUser } = useAuth();
-  
+
   const author = getUserById(post.userId);
   const hasLiked = currentUser ? post.likes.includes(currentUser.id) : false;
 
@@ -48,6 +56,25 @@ export default function PostCard({ post, onPress }: PostCardProps) {
     router.push(`/user/${post.userId}` as any);
   };
 
+  const handleDelete = () => {
+    Alert.alert("投稿の削除", "この投稿を削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deletePost(post.id);
+            onDelete?.();
+          } catch (error) {
+            Alert.alert("エラー", "投稿の削除に失敗しました");
+            console.error(error);
+          }
+        },
+      },
+    ]);
+  };
+
   return (
     <TouchableOpacity
       style={styles.container}
@@ -58,19 +85,29 @@ export default function PostCard({ post, onPress }: PostCardProps) {
       <TouchableOpacity onPress={handleAuthorPress} activeOpacity={0.8}>
         <Image source={{ uri: author.avatarUrl }} style={styles.avatar} />
       </TouchableOpacity>
-      
+
       <View style={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={handleAuthorPress} activeOpacity={0.8}>
-            <Text style={styles.displayName}>{author.displayName}</Text>
-          </TouchableOpacity>
-          <Text style={styles.meta}>
-            {author.department} · {formatTimeAgo(post.createdAt)}
-          </Text>
+          <View style={styles.headerInfo}>
+            <TouchableOpacity onPress={handleAuthorPress} activeOpacity={0.8}>
+              <Text style={styles.displayName}>{author.displayName}</Text>
+            </TouchableOpacity>
+            <Text style={styles.meta}>
+              {author.department} · {formatTimeAgo(post.createdAt)}
+            </Text>
+          </View>
+          {currentUser?.id === post.userId && (
+            <TouchableOpacity
+              onPress={handleDelete}
+              style={styles.deleteButton}
+            >
+              <Trash2 size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
-        
+
         <Text style={styles.text}>{post.content}</Text>
-        
+
         {post.tags.length > 0 && (
           <View style={styles.tags}>
             {post.tags.map((tag, index) => (
@@ -80,19 +117,19 @@ export default function PostCard({ post, onPress }: PostCardProps) {
             ))}
           </View>
         )}
-        
+
         <View style={styles.actions}>
           <TouchableOpacity style={styles.actionButton} onPress={handleLike}>
             <Heart
               size={18}
               color={hasLiked ? colors.like : colors.textMuted}
-              fill={hasLiked ? colors.like : 'transparent'}
+              fill={hasLiked ? colors.like : "transparent"}
             />
             <Text style={[styles.actionText, hasLiked && styles.likedText]}>
               {post.likes.length}
             </Text>
           </TouchableOpacity>
-          
+
           <TouchableOpacity style={styles.actionButton} onPress={onPress}>
             <MessageCircle size={18} color={colors.textMuted} />
             <Text style={styles.actionText}>{post.repliesCount}</Text>
@@ -105,7 +142,7 @@ export default function PostCard({ post, onPress }: PostCardProps) {
 
 const styles = StyleSheet.create({
   container: {
-    flexDirection: 'row',
+    flexDirection: "row",
     padding: 16,
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
@@ -122,11 +159,20 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
     marginBottom: 6,
+  },
+  headerInfo: {
+    flex: 1,
+  },
+  deleteButton: {
+    padding: 4,
   },
   displayName: {
     fontSize: 15,
-    fontWeight: '600' as const,
+    fontWeight: "600" as const,
     color: colors.text,
     marginBottom: 2,
   },
@@ -141,8 +187,8 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   tags: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     marginBottom: 12,
   },
@@ -155,15 +201,15 @@ const styles = StyleSheet.create({
   tagText: {
     fontSize: 13,
     color: colors.tagText,
-    fontWeight: '500' as const,
+    fontWeight: "500" as const,
   },
   actions: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 24,
   },
   actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
   },
   actionText: {

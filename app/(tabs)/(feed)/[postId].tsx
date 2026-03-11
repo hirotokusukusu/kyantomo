@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState } from "react";
 import {
   View,
   Text,
@@ -9,20 +9,21 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
-} from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
-import { Send } from 'lucide-react-native';
-import { colors } from '@/constants/colors';
-import { usePosts } from '@/contexts/PostsContext';
-import { useAuth } from '@/contexts/AuthContext';
-import PostCard from '@/components/PostCard';
-import ReplyCard from '@/components/ReplyCard';
+} from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { Send } from "lucide-react-native";
+import { colors } from "@/constants/colors";
+import { usePosts } from "@/contexts/PostsContext";
+import { useAuth } from "@/contexts/AuthContext";
+import PostCard from "@/components/PostCard";
+import ReplyCard from "@/components/ReplyCard";
 
 export default function PostDetailScreen() {
+  const router = useRouter();
   const { postId } = useLocalSearchParams<{ postId: string }>();
   const { posts, getPostReplies, addReply } = usePosts();
   const { user } = useAuth();
-  const [replyText, setReplyText] = useState('');
+  const [replyText, setReplyText] = useState("");
   const [isSending, setIsSending] = useState(false);
 
   const post = posts.find((p) => p.id === postId);
@@ -46,9 +47,9 @@ export default function PostDetailScreen() {
         userId: user.id,
         content: replyText.trim(),
       });
-      setReplyText('');
+      setReplyText("");
     } catch (error) {
-      Alert.alert('エラー', '返信の送信に失敗しました');
+      Alert.alert("エラー", "返信の送信に失敗しました");
     } finally {
       setIsSending(false);
     }
@@ -56,7 +57,7 @@ export default function PostDetailScreen() {
 
   const renderHeader = () => (
     <View>
-      <PostCard post={post} />
+      <PostCard post={post} onDelete={() => router.back()} />
       {replies.length > 0 && (
         <View style={styles.repliesHeader}>
           <Text style={styles.repliesTitle}>返信 ({replies.length})</Text>
@@ -68,7 +69,7 @@ export default function PostDetailScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={90}
     >
       <FlatList
@@ -90,11 +91,19 @@ export default function PostDetailScreen() {
           maxLength={280}
         />
         <TouchableOpacity
-          style={[styles.sendButton, (!replyText.trim() || isSending) && styles.sendButtonDisabled]}
+          style={[
+            styles.sendButton,
+            (!replyText.trim() || isSending) && styles.sendButtonDisabled,
+          ]}
           onPress={handleSendReply}
           disabled={!replyText.trim() || isSending}
         >
-          <Send size={20} color={replyText.trim() && !isSending ? colors.primary : colors.textMuted} />
+          <Send
+            size={20}
+            color={
+              replyText.trim() && !isSending ? colors.primary : colors.textMuted
+            }
+          />
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -111,8 +120,8 @@ const styles = StyleSheet.create({
   },
   notFound: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: colors.background,
   },
   notFoundText: {
@@ -128,14 +137,14 @@ const styles = StyleSheet.create({
   },
   repliesTitle: {
     fontSize: 15,
-    fontWeight: '600' as const,
+    fontWeight: "600" as const,
     color: colors.textSecondary,
   },
   inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+    flexDirection: "row",
+    alignItems: "flex-end",
     padding: 12,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 12,
+    paddingBottom: Platform.OS === "ios" ? 12 : 12,
     backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderTopColor: colors.border,
@@ -154,8 +163,8 @@ const styles = StyleSheet.create({
   sendButton: {
     width: 40,
     height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   sendButtonDisabled: {
     opacity: 0.5,
